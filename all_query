@@ -1,0 +1,1126 @@
+-- JOINING ALL THE TABLES AND LINKING TABLES
+
+-- area and service
+WITH area_and_service AS (
+    SELECT *
+      FROM service
+           JOIN
+           area_service_linking link ON link.service_id = service.service_id
+           JOIN
+           area a ON a.area_id = link.area_id
+),
+-- content and service
+content_and_service AS (
+    SELECT *
+      FROM service
+           JOIN
+           content_service_linking link ON link.service_id = service.service_id
+           JOIN
+           content c ON c.content_id = link.content_id
+),
+-- parent and service
+parent_and_service AS (
+    SELECT *
+      FROM service
+           JOIN
+           parent_service_linking link ON link.service_id = service.service_id
+           JOIN
+           parent p ON p.parent_id = link.parent_id
+),
+-- tv, area, parent
+tv_and_area_and_parent AS (
+    SELECT *
+      FROM tv_streaming
+           JOIN
+           tv_parent_linking p_link ON p_link.tv_id = tv_streaming.tv_id
+           JOIN
+           parent p ON p.parent_id = p_link.parent_id
+           JOIN
+           tv_area_linking a_link ON a_link.tv_id = tv_streaming.tv_id
+           JOIN
+           area a ON a.area_id = a_link.area_id
+),
+-- tv and parent
+tv_and_parent AS (
+    SELECT *
+      FROM tv_streaming
+           JOIN
+           tv_parent_linking p_link ON p_link.tv_id = tv_streaming.tv_id
+           JOIN
+           parent p ON p.parent_id = p_link.parent_id
+),
+-- JOIN all service data
+service_area_content_parent AS (
+    SELECT *
+      FROM area_and_service
+           JOIN
+           content_and_service cs ON cs.service_id = area_and_service.service_id
+           JOIN
+           parent_and_service ps ON ps.service_id = cs.service_id
+),
+-- LEFT JOIN All parent data
+parent_service_tv AS (
+    SELECT *
+      FROM parent_and_service
+           LEFT JOIN
+           tv_and_area_and_parent tap ON parent_and_service.parent_id = tap.parent_id
+),
+-- for calculating stepwsie in R so need numeric data
+years_ago_R AS ( -- have to use service name because service id is unique and won't group correctly
+    SELECT service_name, subscribers, years_ago, Segment
+    FROM(
+    SELECT service_name, -- getting the year format AND the bins for segments 
+               subscribers,
+               -- string manipulation
+               CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+               -- timestamp transformation
+               (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+               CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+                WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+                WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+                WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+               END AS Segment
+               FROM area_and_service)
+   -- WHERE Segment IN ('Launched_Services') -- Uncomment and replace this when wanting to segment to minimize space
+    GROUP BY service_name
+),
+content_num_R AS (
+    SELECT service_name, subscribers, Count_Content, Segment FROM(
+        SELECT *,
+            CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+                    WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+                    WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+                    WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+                   END AS Segment
+           FROM(SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+                    FROM content_and_service
+                    GROUP BY service_name, subscribers))
+    -- WHERE Segment IN ('Launched_Services')
+    GROUP BY service_name
+),
+area_num_R AS(
+    SELECT service_name, subscribers, count_area, Segment FROM(
+        SELECT -- getting the year format AND the bins for segments 
+               *,
+               CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+                WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+                WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+                WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+               END AS Segment
+               FROM (SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+                            FROM area_and_service
+                            WHERE area_name IN ('Worldwide')
+                            GROUP BY service_name
+                                UNION
+                            SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+                            FROM area_and_service
+                            WHERE area_name NOT IN ('Worldwide')
+                        GROUP BY service_name))
+    -- WHERE Segment IN ('Launched_Services')
+    GROUP BY service_name 
+),
+    
+-- MERGE THE R TABLES
+all_num_R AS (
+    SELECT A.service_name, A.subscribers,
+           count_area,
+           Count_Content,
+           years_ago,
+           A.Segment
+    FROM area_num_R A           
+    JOIN content_num_R C ON C.service_name = A.service_name
+    JOIN  years_ago_R Y ON Y.service_name = C.service_name
+)
+
+-- MANIPULATION
+-- LIMIT
+-- CONTENT
+-- seeing top 10
+SELECT COUNT(content_name) AS Number_Content, SUM(subscribers) AS Total_Subscribers, content_name
+FROM content_and_service
+GROUP BY content_name
+ORDER BY SUM(subscribers) DESC
+LIMIT 10;
+
+-- bottom 10
+SELECT COUNT(content_name) AS Number_Content, SUM(subscribers) AS Total_Subscribers, content_name
+FROM content_and_service
+GROUP BY content_name
+ORDER BY SUM(subscribers) ASC
+LIMIT 10;
+
+-- SERVICES
+-- seeing top 10
+SELECT SUM(subscribers) AS Total_Subscribers, service_name
+FROM service
+GROUP BY service_name
+ORDER BY SUM(subscribers) DESC
+LIMIT 10;
+
+-- bottom 10
+-- seeing top 10
+SELECT SUM(subscribers) AS Total_Subscribers, service_name
+FROM service
+GROUP BY service_name
+ORDER BY SUM(subscribers) ASC
+LIMIT 10;
+
+-- AREA
+-- seeing top 10
+SELECT COUNT(area_name) AS Number_Area, SUM(subscribers) AS Total_Subscribers, area_name
+FROM area_and_service
+GROUP BY area_name
+ORDER BY SUM(subscribers) DESC
+LIMIT 10;
+
+-- bottom 10
+SELECT COUNT(area_name) AS Number_Area, SUM(subscribers) AS Total_Subscribers, area_name
+FROM area_and_service
+GROUP BY area_name
+ORDER BY SUM(subscribers) ASC
+LIMIT 10;
+
+-- HAVING
+-- Subscriber breakdown by subscriber conditions
+SELECT SUM(subscribers) AS Total_Subscribers,
+       service_name
+  FROM parent_and_service
+ GROUP BY service_name
+HAVING SUM(subscribers) > 100000000
+ ORDER BY SUM(subscribers) DESC;
+ 
+-- GROUP BY
+-- Area: What area has the most amount of subscribers?
+SELECT SUM(subscribers) AS Total_Subscribers,
+       area_name AS Area
+  FROM area_and_service
+ GROUP BY area_name,
+          service_name
+ ORDER BY SUM(subscribers) DESC;-- CASE Statements, subquery
+ 
+
+-- SEGMENT NALYSIS
+-- avg area per service in growing
+SELECT AVG(count_area)
+FROM all_num_R
+WHERE Segment IN ('Growing_Services');
+
+-- avg area per service in launched
+SELECT AVG(count_area)
+FROM all_num_R
+WHERE Segment IN ('Launched_Services');
+
+-- dominators
+SELECT AVG(count_area)
+FROM all_num_R
+WHERE Segment IN ('Industry_Dominators');
+-- RECOMMENDATIONS
+-- INCREASING area, launch, year + 1
+
+-- 524936.83 area
+-- 3127351.61 content
+-- 2172991.74 years
+-- overall: content, area
+SELECT service_name,
+       subscribers,
+       Area_Added  AS Increased_Recommendation_Subscribers,
+       Area_Added + subscribers AS Total_Subscribers,
+       Area_Added + Next_Year AS Total_Subscribers_Next_Year
+FROM(
+    SELECT *,
+           CAST(Count_area * 524936.83 AS INTEGER) AS Area_Added,
+           CAST(years_ago * 2172991.74 AS INTEGER) AS  Next_Year
+    FROM all_num_R
+);
+
+-- growing only area
+SELECT service_name,
+       subscribers,
+       Area_Added  AS Increased_Recommendation_Subscribers,
+       Area_Added + subscribers AS Total_Subscribers,
+       Area_Added + Next_Year AS Total_Subscribers_Next_Year
+FROM(
+    SELECT *,
+           CAST(Count_area * 524936.83 AS INTEGER) AS Area_Added,
+           CAST(years_ago * 2172991.74 AS INTEGER) AS  Next_Year
+    FROM all_num_R
+WHERE Segment IN ('Growing_Services'));
+
+-- launched servuces: content and area
+SELECT service_name,
+       subscribers,
+       Area_Added + Content_Added AS Increased_Recommendation_Subscribers,
+       Area_Added + Content_Added + subscribers AS Total_Subscribers,
+       Area_Added + Content_Added + Next_Year AS Total_Subscribers_Next_Year
+FROM(
+    SELECT *,
+           CAST(Count_area * 524936.83 AS INTEGER) AS Area_Added,
+           CAST(Count_Content * 3127351.61 AS INTEGER) AS Content_Added,
+           CAST(years_ago * 2172991.74 AS INTEGER) AS  Next_Year
+    FROM all_num_R
+WHERE Segment IN ('Launched_Services'));
+
+-- count of content
+SELECT content_name, COUNT(content_name) AS Count_of_Content
+FROM content_and_service
+GROUP BY content_name;
+-- I want segment column to this table
+
+SELECT service_id,
+        service_name,
+        launch,
+        subscribers,
+        content_id,
+        content_name,
+        Segment FROM
+(
+    SELECT *,
+               CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+                WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+                WHEN (subscribers > 6299605 AND subscribers <= 42600000) THEN 'Established_Services (REVISED)'-- i want to include the top 10 services in this to see how much share they own
+                -- number 10 is espn with 42.6m 
+                WHEN (subscribers >= 42600000) THEN 'Top 10'
+               END AS Segment
+               FROM content_and_service
+);
+-- LINEAR REGRESSION ON THIS!
+-- for calculating correlation in excel
+-- YEAR LAUNCHED/BEEN ACTIVE
+-- SEGMENTED
+-- Industry_Dominators
+SELECT service_name, subscribers, years_ago
+FROM(
+SELECT service_name, -- getting the year format AND the bins for segments 
+           subscribers,
+           CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+WHERE Segment IN ('Industry_Dominators')
+GROUP BY service_name;
+
+-- Established_Services
+SELECT subscribers, years_ago
+FROM(
+SELECT service_name, -- getting the year format AND the bins for segments 
+           subscribers,
+           CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+WHERE Segment IN ('Established_Services')
+GROUP BY service_name;
+
+-- Growing_Services
+SELECT subscribers, years_ago
+FROM(
+SELECT service_name, -- getting the year format AND the bins for segments 
+           subscribers,
+           CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+WHERE Segment IN ('Growing_Services')
+GROUP BY service_name;
+
+-- launched
+SELECT subscribers, years_ago
+FROM(
+SELECT service_name, -- getting the year format AND the bins for segments 
+           subscribers,
+           CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+WHERE Segment IN ('Launched_Services')
+GROUP BY service_name;
+
+-- ALL DATA
+SELECT subscribers, years_ago
+FROM(
+SELECT  -- getting the year format AND the bins for segments 
+           subscribers,
+           service_name,
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+GROUP BY service_name;
+
+
+-- NUMBER OF PLATFORMS (MOBILE AND PLATFORM) VS SUBS
+
+-- num platforms and subs
+-- not enough data points to segment
+SELECT subscribers,
+       Total_OS_Access_3
+       FROM(
+        SELECT *,
+            Total_OS_Access_3 + Total_Mobile_Access_2 AS Mobile_and_Platform
+        FROM(
+            SELECT *,
+                   website + console + tv_set_app AS Total_Platforms_Access_3,
+                   windows + mac + linux AS Total_OS_Access_3,
+                   ios + android AS Total_Mobile_Access_2,
+                   website + console + tv_set_app +  windows + mac + linux + ios + android AS Total_Access
+            FROM
+                tv_streaming
+                JOIN
+                tv_parent_linking p_link ON p_link.tv_id = tv_streaming.tv_id
+                JOIN
+                parent p ON p.parent_id = p_link.parent_id
+                JOIN
+                parent_service_linking ps_link ON ps_link.parent_id = p.parent_id
+                JOIN
+                service s ON s.service_id = ps_link.service_id));
+
+-- COUNT OF CONTNET VS SUBS
+-- BY SEGMENT
+-- industry dominators
+SELECT subscribers, Count_Content FROM(
+SELECT *,
+    CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+   FROM(SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+            FROM content_and_service
+            GROUP BY service_name, subscribers))
+WHERE Segment IN ('Industry_Dominators')
+GROUP BY service_name;
+
+-- ESTABLISHED
+SELECT subscribers, Count_Content FROM(
+SELECT *,
+    CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+   FROM(SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+            FROM content_and_service
+            GROUP BY service_name, subscribers))
+WHERE Segment IN ('Established_Services')
+GROUP BY service_name;
+
+-- GROWING
+SELECT subscribers, Count_Content FROM(
+SELECT *,
+    CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+   FROM(SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+            FROM content_and_service
+            GROUP BY service_name, subscribers))
+WHERE Segment IN ('Growing_Services')
+GROUP BY service_name;
+
+-- LAUNCH
+SELECT subscribers, Count_Content FROM(
+SELECT *,
+    CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+   FROM(SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+            FROM content_and_service
+            GROUP BY service_name, subscribers))
+WHERE Segment IN ('Launched_Services')
+GROUP BY service_name;
+
+-- LOGIC BEHIND
+-- geting count of content
+SELECT COUNT(content_name) AS Count_Content, service_name, subscribers
+    FROM content_and_service
+GROUP BY service_name, subscribers;
+            
+-- AREA AND SUBS
+-- how many total areas
+-- BY SEGMENT
+-- established services
+SELECT subscribers, count_area FROM(
+    SELECT -- getting the year format AND the bins for segments 
+           *,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM (SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name IN ('Worldwide')
+                        GROUP BY service_name
+                            UNION
+                        SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name NOT IN ('Worldwide')
+                    GROUP BY service_name))
+WHERE Segment IN ('Industry_Dominators')
+GROUP BY service_name;
+
+-- established services
+SELECT subscribers, count_area FROM(
+    SELECT -- getting the year format AND the bins for segments 
+           *,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM (SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name IN ('Worldwide')
+                        GROUP BY service_name
+                            UNION
+                        SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name NOT IN ('Worldwide')
+                    GROUP BY service_name))
+WHERE Segment IN ('Established_Services')
+GROUP BY service_name;
+
+-- growing services
+SELECT subscribers, count_area FROM(
+    SELECT -- getting the year format AND the bins for segments 
+           *,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM (SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name IN ('Worldwide')
+                        GROUP BY service_name
+                            UNION
+                        SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name NOT IN ('Worldwide')
+                    GROUP BY service_name))
+WHERE Segment IN ('Growing_Services')
+GROUP BY service_name;
+
+-- launch
+SELECT subscribers, count_area FROM(
+    SELECT -- getting the year format AND the bins for segments 
+           *,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM (SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name IN ('Worldwide')
+                        GROUP BY service_name
+                            UNION
+                        SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+                        FROM area_and_service
+                        WHERE area_name NOT IN ('Worldwide')
+                    GROUP BY service_name))
+WHERE Segment IN ('Launched_Services')
+GROUP BY service_name;
+
+-- making the area count logic
+SELECT COUNT(DISTINCT area_name)
+FROM area_and_service;
+-- 81 total areas - 1 for worldwide so 80
+-- first worldwide, set to total areas
+SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+FROM area_and_service
+WHERE area_name IN ('Worldwide')
+GROUP BY service_name; 
+
+-- then not worldwide get their count
+SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+FROM area_and_service
+WHERE area_name NOT IN ('Worldwide')
+GROUP BY service_name;  
+
+--- then union
+SELECT subscribers, service_name, CAST('80' AS INTEGER) AS Count_Area
+FROM area_and_service
+WHERE area_name IN ('Worldwide')
+GROUP BY service_name
+UNION
+SELECT subscribers, service_name, COUNT(area_name) AS Count_Area
+FROM area_and_service
+WHERE area_name NOT IN ('Worldwide')
+GROUP BY service_name; 
+
+-- NUMBER OF AREA AND SUBS
+-- select worldwide set it to total number of areas
+SELECT subscribers, service_name,
+    CASE WHEN area_name IN ("Worldwide") THEN Total_Areas END AS WorldWide,
+    COUNT(area_name) AS Count_Area
+
+GROUP BY service_name;
+
+-- accessibility
+-- how many tv streaming in parent?
+SELECT *
+FROM tv_and_parent
+WHERE parent_name IN(
+    SELECT parent_name
+    FROM parent_and_service
+);
+
+
+-- how many tv streaming in service?
+SELECT service
+FROM tv_streaming
+WHERE service IN(
+    SELECT service_name
+    FROM service);
+
+SELECT * FROM
+tv_streaming
+JOIN
+tv_parent_linking p_link ON p_link.tv_id = tv_streaming.tv_id
+JOIN
+parent p ON p.parent_id = p_link.parent_id
+JOIN
+parent_service_linking ps_link ON ps_link.parent_id = p.parent_id
+JOIN
+service s ON s.service_id = ps_link.service_id;
+
+
+SELECT *,
+       website + console + tv_set_app AS Total_Platforms_Access_3,
+       windows + mac + linux AS Total_OS_Access_3,
+       ios + android AS Total_Mobile_Access_2,
+       website + console + tv_set_app +  windows + mac + linux + ios + android AS Total_Access
+       
+ FROM tv_streaming;
+ 
+-- percentages and total columns
+SELECT *,
+       ((CAST(Total_Platforms_Access_3 AS DECIMAL)/3.0)*100) AS Percent_Platform,
+       ((CAST(Total_OS_Access_3 AS DECIMAL)/3.0)*100) AS Percent_OS,
+       ((CAST(Total_Mobile_Access_2 AS DECIMAL)/2.0)*100) AS Percent_Mobile,
+       ((CAST(Total_Access AS DECIMAL)/8.0)*100) AS Percent_Total
+FROM(
+    SELECT *,
+       website + console + tv_set_app AS Total_Platforms_Access_3,
+       windows + mac + linux AS Total_OS_Access_3,
+       ios + android AS Total_Mobile_Access_2,
+       website + console + tv_set_app +  windows + mac + linux + ios + android AS Total_Access
+       
+ FROM tv_streaming);
+
+
+
+-- segment analysis
+SELECT COUNT(DISTINCT area_name), service_name, Segment, COUNT(subscribers)
+FROM(
+    SELECT service_name, -- getting the year format AND the bins for segments 
+           subscribers,
+           area_name,
+           CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+           -- STRING MANIPULATION
+           (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+           CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+            WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+            WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+            WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+           END AS Segment
+           FROM area_and_service)
+GROUP BY Segment, service_name;
+
+SELECT area_name
+FROM area_and_service
+WHERE service_name = 'Hulu';
+
+-- HOW MANY SERVICES EVERY AREA
+SELECT area_name, COUNT(DISTINCT service_name)
+FROM area_and_service
+GROUP BY area_name
+ORDER BY COUNT(DISTINCT service_name) DESC;
+
+-- UNION
+-- Finding the
+-- DISTINCT
+SELECT service_name, COUNT(DISTINCT content_name)
+FROM content_and_service
+GROUP BY service_name
+ORDER BY COUNT(content_name) DESC;
+
+-- how many tv streaming offers x y z platforms AND has over 1m subscribers
+SELECT service
+FROM tv_streaming
+WHERE ios = 1 AND website = 1 AND windows = 1 AND mac = 1 AND linux = 1 AND android = 1 AND console = 1;
+
+-- tv streaming with website, console, and tv app with over 1m subs
+SELECT DISTINCT(service)
+    FROM(
+    SELECT service
+    FROM tv_streaming
+    WHERE website = 1 AND tv_set_app = 1 AND console = 1
+    UNION
+    SELECT service_name
+    FROM service 
+WHERE subscribers > 1000000);
+
+SELECT COUNT(DISTINCT service_name) AS Unique_Service_Count, content_name
+FROM content_and_service
+ORDER BY COUNT(DISTINCT service_name) DESC;
+
+-- Exporting the different segments
+SELECT service_name AS service, -- getting the year format AND the bins for segments 
+       subscribers,
+       CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+       (strftime('%Y', 'now') - CAST(SUBSTR(launch,-4) AS INTEGER)) AS Years_Ago,
+       CASE WHEN (subscribers >= 100000 AND subscribers <= 793700) THEN 'Launched_Services'
+        WHEN (subscribers > 793700 AND subscribers <= 6299605) THEN 'Growing_Services'
+        WHEN (subscribers > 6299605 AND subscribers <= 50000000) THEN 'Established_Services'
+        WHEN (subscribers >= 50000000) THEN 'Industry_Dominators'
+       END AS Segment
+       FROM service;
+       
+
+
+
+
+-- MONETARY VALUE
+-- Assumptions
+    -- streaming services regularly increase their prices https://www.fiercevideo.com/video/timeline-price-hikes-hulu-sling-tv-and-other-vmvpds
+        -- every 6 months subscription companies increase their price https://www.priceintelligently.com/blog/subscription-pricing
+        -- netflix has increased double https://www.thestreet.com/investing/how-much-has-the-price-of-cable-and-streaming-gone-up-in-a-decade
+    -- longer a streaming service has been around: the more price increase
+    -- base: $10 plan, increase 10% every year since launch
+    -- costs:
+        -- netflix profit margins 18% https://www.hollywoodreporter.com/business/business-news/smaller-streaming-services-may-join-forces-with-larger-platforms-analyst-forecasts-4135409/
+            -- $1 of monthly customer average revenue per user (ARPU)
+            -- cost based on subscribers, bigger companies have a larger profit margin
+      
+SELECT service,
+                  subscribers,
+                  Year,
+                  Revenue_From_users - Total_Costs AS Total_Profit,
+                  ((Revenue_From_users - Total_Costs)/Revenue_From_users)*100 AS Profit_Margin
+                  FROM(
+                      -- this is to apply formula for total profit over every cell
+                      SELECT service,
+                             subscribers,
+                             Year,
+                             service,
+                             SUM(Revenue) OVER (PARTITION BY service) AS Revenue_From_users,
+                             SUM(Cost) OVER (PARTITION BY service) AS Total_Costs
+                       FROM(
+                       -- this is to assign monetary value to tracks and users
+                           SELECT service,
+                              subscribers,
+                              Year,
+                              Launched_Services,
+                              Growing_Services,
+                              Established_Services,
+                              Industry_Dominators,
+                              Revenue,
+                              CASE -- AVG: $1 revenue so that is 90% costs, however the bigger the subscriptions the lower costs they incur
+                                  -- neftlix with 18% will be for the top subscribers
+                                  
+                                  -- Starters will have the highest cost and more than average, so more than 90%
+                                  WHEN Launched_Services = 1 THEN Revenue*0.95
+                                  -- small and mighty have slightly less costs but more than average
+                                  WHEN Growing_Services = 1 THEN Revenue*0.93
+                                  -- up and coming and leading potential are at the middle, so average
+                                  WHEN Established_Services = 1 THEN Revenue*0.90
+                                  -- netflix level 
+                                  WHEN Industry_Dominators = 1 THEN Revenue*0.82
+                                  END AS Cost
+                       FROM (SELECT service,
+                              subscribers,
+                              Year,
+                              Launched_Services,
+                              Growing_Services,
+                              Established_Services,
+                              Industry_Dominators,
+                              CASE -- it's by millions so multiply by million, this is for REVENUE
+                              -- 4% INCREASE to $10, every year, except if it is less than 3 years old it is still considered new
+                                  
+                                  WHEN (This_Year - Year) <= 3
+                                  THEN subscribers*10
+                                  ELSE subscribers*10*POWER(1.04, This_Year - Year) 
+                                  END AS Revenue
+                              FROM
+                              (
+                              SELECT service_name AS service, -- getting the year format AND the bins for segments 
+                              subscribers,
+                              CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+                              strftime('%Y', 'now') AS This_Year,
+                              CASE WHEN (subscribers >= 100000 AND 
+                                             subscribers <= 793700) THEN 1 END AS Launched_Services,
+                              CASE WHEN (subscribers > 793700 AND 
+                                             subscribers <= 6299605) THEN 1 END AS Growing_Services,
+                              CASE WHEN (subscribers > 6299605 AND 
+                                             subscribers <= 50000000) THEN 1 END AS Established_Services,
+                              CASE WHEN (subscribers >= 50000000) THEN 1 END AS Industry_Dominators
+                              FROM service))))
+                       ORDER BY Total_Profit DESC;      
+
+SELECT service, subscribers, Year,
+        -- string manipulation
+       PRINTF('$%,2d', Total_Profit) AS Total_Profit,
+       PRINTF('%2.2f%%', Profit_Margin) AS Profit_Margin_Percentage
+       FROM(
+           -- this is to combine the 2 profits to make total profit
+           SELECT service,
+                  subscribers,
+                  Year,
+                  Revenue_From_users - Total_Costs AS Total_Profit,
+                  ((Revenue_From_users - Total_Costs)/Revenue_From_users)*100 AS Profit_Margin
+                  FROM(
+                      -- this is to apply formula for total profit over every cell
+                      SELECT service,
+                             subscribers,
+                             Year,
+                             service,
+                             SUM(Revenue) OVER (PARTITION BY service) AS Revenue_From_users,
+                             SUM(Cost) OVER (PARTITION BY service) AS Total_Costs
+                       FROM(
+                       -- this is to assign monetary value to tracks and users
+                           SELECT service,
+                              subscribers,
+                              Year,
+                              Launched_Services,
+                              Growing_Services,
+                              Established_Services,
+                              Industry_Dominators,
+                              Revenue,
+                              CASE -- AVG: $1 revenue so that is 90% costs, however the bigger the subscriptions the lower costs they incur
+                                  -- neftlix with 18% will be for the top subscribers
+                                  
+                                  -- Starters will have the highest cost and more than average, so more than 90%
+                                  WHEN Launched_Services = 1 THEN Revenue*0.95
+                                  -- small and mighty have slightly less costs but more than average
+                                  WHEN Growing_Services = 1 THEN Revenue*0.93
+                                  -- up and coming and leading potential are at the middle, so average
+                                  WHEN Established_Services = 1 THEN Revenue*0.90
+                                  -- netflix level 
+                                  WHEN Industry_Dominators = 1 THEN Revenue*0.82
+                                  END AS Cost
+                       FROM (SELECT service,
+                              subscribers,
+                              Year,
+                              Launched_Services,
+                              Growing_Services,
+                              Established_Services,
+                              Industry_Dominators,
+                              CASE -- it's by millions so multiply by million, this is for REVENUE
+                              -- 4% INCREASE to $10, every year, except if it is less than 3 years old it is still considered new
+                                  
+                                  WHEN (This_Year - Year) <= 3
+                                  THEN subscribers*10
+                                  ELSE subscribers*10*POWER(1.04, This_Year - Year) 
+                                  END AS Revenue
+                              FROM
+                              (
+                              SELECT service_name AS service, -- getting the year format AND the bins for segments 
+                              subscribers,
+                              CAST(SUBSTR(launch,-4) AS INTEGER) AS Year,
+                              strftime('%Y', 'now') AS This_Year,
+                              CASE WHEN (subscribers >= 100000 AND 
+                                             subscribers <= 793700) THEN 1 END AS Launched_Services,
+                              CASE WHEN (subscribers > 793700 AND 
+                                             subscribers <= 6299605) THEN 1 END AS Growing_Services,
+                              CASE WHEN (subscribers > 6299605 AND 
+                                             subscribers <= 50000000) THEN 1 END AS Established_Services,
+                              CASE WHEN (subscribers >= 50000000) THEN 1 END AS Industry_Dominators
+                              FROM service))))
+                       ORDER BY Total_Profit DESC);
+
+
+
+-- TIMESTAMP MANIPULATION
+-- how long has it been since launch?
+-- HELP
+
+SELECT CAST(SUBSTR(launch,-4) AS INTEGER) AS Year, COUNT(CAST(SUBSTR(launch,-4) AS INTEGER))
+FROM service
+GROUP BY CAST(SUBSTR(launch,-4) AS INTEGER);
+
+-- IQR FOR SUBSCRIBERS
+-- for segments
+SELECT Segment,
+       -- minimum value of subs
+       PRINTF('%,2d',MIN(subscribers)) AS Minimum,
+       -- 1st quartile boundary for subs
+       MAX(CASE
+               WHEN Quartile = 1
+               THEN PRINTF('%,2d', subscribers)
+               END) AS Quartile_1,
+       -- 2nd quartile (median)
+       MAX(CASE
+               WHEN Quartile = 2
+               THEN PRINTF('%,2d',subscribers)
+               END) AS Median,
+       -- 3rd quartile
+       MAX(CASE
+               WHEN Quartile = 3
+               THEN PRINTF('%,2d',subscribers)
+               END) AS Quartile_3,
+       -- max value overall
+       PRINTF('%,2d',MAX(subscribers)) AS Maximum,
+       -- Count of all instances
+       COUNT(Quartile) AS Count_of_Quartile
+       FROM(
+           SELECT Segment,
+              subscribers,
+              NTILE(4) OVER (PARTITION BY Segment ORDER BY subscribers) AS Quartile
+              FROM(
+                  SELECT *,
+                      -- no streaming services under 100k CASE WHEN subscribers < 100000 THEN 1 END AS under_100k,
+                      CASE WHEN (subscribers >= 100000 AND 
+                                 subscribers <= 500000) THEN 'Up_and_Coming'
+                      WHEN (subscribers >= 500000 AND 
+                                 subscribers <= 1000000) THEN 'Small_and_Mighty'
+                      WHEN (subscribers >= 1000000 AND 
+                                 subscribers <= 3000000) THEN 'Up_and_Coming'
+                      WHEN (subscribers >= 3000000 AND 
+                                 subscribers <= 6000000) THEN 'Leading_Potential'
+                      WHEN (subscribers >= 6000000 AND 
+                                 subscribers <= 9000000) THEN 'Streaming_Giants'
+                      WHEN (subscribers >= 9000000) THEN 'Industry_Dominators'
+                      END AS Segment
+                  FROM service))
+     GROUP BY Segment;
+     
+-- for area
+-- now we summarize it for grouping
+SELECT area_name,
+       -- minimum value of subs
+       MIN(subscribers) AS Minimum,
+       -- 1st quartile boundary for subs
+       MAX(CASE
+               WHEN Quartile = 1
+               THEN subscribers
+               END) AS Quartile_1,
+       -- 2nd quartile (median)
+       MAX(CASE
+               WHEN Quartile = 2
+               THEN subscribers
+               END) AS Median,
+       -- 3rd quartile
+       MAX(CASE
+               WHEN Quartile = 3
+               THEN subscribers
+               END) AS Quartile_3,
+       -- max value overall
+       MAX(subscribers) AS Maximum,
+       -- Count of all instances
+       COUNT(Quartile) AS Count_of_Quartile
+   FROM(
+       -- PARENT: want quartile number baseed on subscribers from parents
+       SELECT area_name,
+              subscribers,
+              NTILE(4) OVER (PARTITION BY area_name ORDER BY subscribers) AS Quartile
+       FROM area_and_service
+       ORDER BY subscribers)
+   GROUP BY area_name
+   ORDER BY COUNT(Quartile) DESC;
+   
+-- now we summarize it for grouping
+SELECT parent_name,
+       -- minimum value of subs
+       MIN(subscribers) AS Minimum,
+       -- 1st quartile boundary for subs
+       MAX(CASE
+               WHEN Quartile = 1
+               THEN subscribers
+               END) AS Quartile_1,
+       -- 2nd quartile (median)
+       MAX(CASE
+               WHEN Quartile = 2
+               THEN subscribers
+               END) AS Median,
+       -- 3rd quartile
+       MAX(CASE
+               WHEN Quartile = 3
+               THEN subscribers
+               END) AS Quartile_3,
+       -- max value overall
+       MAX(subscribers) AS Maximum,
+       -- Count of all instances
+       COUNT(Quartile) AS Count_of_Quartile
+   FROM(
+       -- PARENT: want quartile number baseed on subscribers from parents
+       SELECT parent_name,
+              subscribers,
+              NTILE(4) OVER (PARTITION BY parent_name ORDER BY subscribers) AS Quartile
+       FROM parent_and_service
+       ORDER BY subscribers)
+   GROUP BY parent_name
+   ORDER BY COUNT(Quartile) DESC;
+
+
+
+ 
+-- Assumptions
+    -- $0.004 from song stream
+    -- $0.25 profit from download song
+    -- $0.5 profit from paying users
+
+-- formatting purposes
+SELECT service,
+       PRINTF('$%,2d', Total_Profit) AS Total_Profit,
+       PRINTF('%2.2f%%', Percentage) AS Paying_Cust_Percentage
+       FROM(
+           -- this is to combine the 2 profits to make total profit
+           SELECT service,
+                  Profits_From_Track + Profit_From_Users AS Total_Profit,
+                  Pay_Active_Ratio * 100 AS Percentage
+                  FROM(
+                      -- this is to apply formula for total profit over every cell
+                      SELECT service,
+                             CAST((num_pay_users_m/num_active_users_m) AS DOUBLE) AS Pay_Active_Ratio,
+                             SUM(User_Profit) OVER (PARTITION BY service) AS Profit_From_Users,
+                             SUM(Track_Profit) OVER (PARTITION BY service) AS Profits_From_Track
+                       FROM(
+                       -- this is to assign monetary value to tracks and users
+                           SELECT service,
+                              num_active_users_m,
+                              num_pay_users_m,
+                              num_tracks_m,
+                              CASE -- it's by millions so multiply by million
+                                  WHEN num_pay_users_m > 0
+                                  THEN num_pay_users_m * 0.5 * 1000000
+                                  ELSE 0
+                                  END AS User_Profit,
+                              CASE
+                                  WHEN num_tracks_m > 0
+                                  THEN num_tracks_m * 0.004 * 1000000
+                                  ELSE 0
+                                  END AS Track_Profit
+                       FROM radio_streaming))
+                       ORDER BY Total_Profit DESC);
+   
+        
+-- Assumptions
+    -- $0.004 from song stream
+    -- $0.25 profit from download song
+    -- $0.5 profit from paying users
+
+-- formatting purposes
+SELECT service,
+        -- STRING MANIPULATION
+       PRINTF('$%,2d', Total_Profit) AS Total_Profit,
+       PRINTF('%2.2f%%', Percentage) AS Paying_Cust_Percentage
+       FROM(
+           -- this is to combine the 2 profits to make total profit
+           SELECT service,
+                  Profits_From_Track + Profit_From_Users AS Total_Profit,
+                  Pay_Active_Ratio * 100 AS Percentage
+                  FROM(
+                      -- this is to apply formula for total profit over every cell
+                      SELECT service,
+                             CAST((num_pay_users_m/num_active_users_m) AS DOUBLE) AS Pay_Active_Ratio,
+                             SUM(User_Profit) OVER (PARTITION BY service) AS Profit_From_Users,
+                             SUM(Track_Profit) OVER (PARTITION BY service) AS Profits_From_Track
+                       FROM(
+                       -- this is to assign monetary value to tracks and users
+                           SELECT service,
+                              num_active_users_m,
+                              num_pay_users_m,
+                              num_tracks_m,
+                              CASE -- it's by millions so multiply by million
+                                  WHEN num_pay_users_m > 0
+                                  THEN num_pay_users_m * 0.5 * 1000000
+                                  ELSE 0
+                                  END AS User_Profit,
+                              CASE
+                                  WHEN num_tracks_m > 0
+                                  THEN num_tracks_m * 0.004 * 1000000
+                                  ELSE 0
+                                  END AS Track_Profit
+                       FROM radio_streaming))
+                       ORDER BY Total_Profit DESC);
+   
+               
+
+-- I want to divide up the streaming services into different segments to identify their differing potentials
+    -- Industry Dominators: over_9m
+        -- these dominate the industry and have been around for a while, household names
+    -- Streaming giants: between_6_9m
+        -- these are also dominating but maybe newer or less accessible
+    -- Leading potential: between_3_6m
+        -- these are services who have potential to disrupt market and take over soon
+    -- Up and coming: between_1_3m
+        -- similar to the leading potential but perhaps newer
+    -- Small and mighty: between_500_1m
+        -- these are services that are barely getting started and putting everything together
+    -- Starters: between_100_500k
+        -- companies that are just starting
+
+-- will calculate profit for these segments and then average
+SELECT -- i chose these bins based on how many companies were in each range, allowing an equal distribution across ranges
+       COUNT(Starters) AS Starters,
+       COUNT(Small_and_Mighty) AS Small_and_Mighty,
+       COUNT(Up_and_Coming) AS Up_and_Coming,
+       COUNT(Leading_Potential) AS Leading_Potential,
+       COUNT(Streaming_Giants) AS Streaming_Giants,
+       COUNT(Industry_Dominators) AS Industry_Dominators
+  FROM (
+           SELECT *,
+                  -- no streaming services under 100k CASE WHEN subscribers < 100000 THEN 1 END AS under_100k,
+                  CASE WHEN (subscribers >= 100000 AND 
+                             subscribers <= 500000) THEN 1 END AS Starters,
+                  CASE WHEN (subscribers >= 500000 AND 
+                             subscribers <= 1000000) THEN 1 END AS Small_and_Mighty,
+                  CASE WHEN (subscribers >= 1000000 AND 
+                             subscribers <= 3000000) THEN 1 END AS Up_and_Coming,
+                  CASE WHEN (subscribers >= 3000000 AND 
+                             subscribers <= 6000000) THEN 1 END AS Leading_Potential,
+                  CASE WHEN (subscribers >= 6000000 AND 
+                             subscribers <= 9000000) THEN 1 END AS Streaming_Giants,
+                  CASE WHEN (subscribers >= 9000000) THEN 1 END AS Industry_Dominators
+             FROM service
+       );-- Average: Radio Stats
+-- Assigning 0.5 to partial assuming that partial allows half access
+SELECT AVG(Free_Access) AS Average_Free_Access,
+       AVG(select_stream) AS Average_Selective_Streaming,
+       AVG(lossless_q) AS Average_Lossless,
+       AVG(track_downloads_q) AS Avg_Track_Downloadable,
+       AVG(web_q) AS Avg_Web,
+       AVG(android_q) AS Avg_Android,
+       AVG(ios_q) AS Avg_Ios,
+       AVG(desktop_q) AS Avg_Desktop,
+       AVG(other_platforms) AS Avg_Other_Platforms,
+       AVG(global_availability) AS Avg_Global_Availability,
+       AVG(login_q) AS Avg_Login_Required
+  FROM (
+           SELECT *,
+                  CASE WHEN free_access_available = 'Yes' THEN 1 WHEN free_access_available = 'Partial' THEN 0.5 ELSE 0 END AS Free_Access,
+                  CASE WHEN selective_streaming = 'Yes' THEN 1 WHEN selective_streaming = 'Partial' THEN 0.5 ELSE 0 END AS select_stream,
+                  CASE WHEN lossless = 'Yes' THEN 1 WHEN lossless = 'Partial' THEN 0.5 ELSE 0 END AS lossless_q,
+                  CASE WHEN track_downloads = 'Yes' THEN 1 WHEN track_downloads = 'Partial' THEN 0.5 ELSE 0 END AS track_downloads_q,
+                  CASE WHEN web = 'Yes' THEN 1 ELSE 0 END AS web_q,
+                  CASE WHEN android = 'Yes' THEN 1 ELSE 0 END AS android_q,
+                  CASE WHEN ios = 'Yes' THEN 1 ELSE 0 END AS ios_q,
+                  CASE WHEN desktop = 'Yes' THEN 1 ELSE 0 END AS desktop_q,
+                  CASE WHEN global_availability = 'Yes' THEN 1 WHEN global_availability = 'Partial' THEN 0.5 ELSE 0 END AS global_availability_q,
+                  CASE WHEN login_required = 'Yes' THEN 1 ELSE 0 END AS login_q
+             FROM radio_streaming
+       );-- Calculating the revenue amount generated per song for radio
